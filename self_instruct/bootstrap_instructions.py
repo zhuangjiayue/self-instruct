@@ -12,12 +12,13 @@ from functools import partial
 from rouge_score import rouge_scorer
 from gpt3_api import make_requests as make_gpt3_requests
 
+# 设置随机种子
 
 random.seed(42)
 
 
 def encode_prompt(prompt_instructions, classification=False):
-    """Encode multiple prompt instructions into a single string."""
+    """对prompt进行编码"""
     if classification:
         prompt = "Come up with a series of classification tasks. Try to specify the possible output labels when possible.\n"
     else:
@@ -30,15 +31,17 @@ def encode_prompt(prompt_instructions, classification=False):
 
 
 def sample_machine_instructions(machine_instructions, similarities, n):
-    """Sample n machine instructions from a list of machine instructions."""
+    """在字符串 s 中查找字符串 w"""
     return random.sample(machine_instructions, min(n, len(machine_instructions)))
 
 
 def find_word_in_string(w, s):
+
     return re.compile(r'\b({0})\b'.format(w), flags=re.IGNORECASE).search(s)
 
 
 def post_process_gpt3_response(response):
+    """对 GPT-3 的响应进行后处理，包括分割生成的文本，对文本进行清洗，以及根据一系列规则过滤掉不合适的指令"""
     if response is None or response["choices"][0]["finish_reason"] == "length":
         return []
     raw_instructions = re.split(r"\n\d+\s?\. ", response["choices"][0]["text"])
@@ -129,17 +132,29 @@ def parse_args():
 
 
 if __name__ == "__main__":
+    # 解析命令行参数
     args = parse_args()
+    # 读取种子任务文件，其中每一行都是一个json格式的任务信息，通过json.loads解析每一行的内容，得到一个包含所有任务信息的列表
+    # default="data/seed_tasks.jsonl" 最初的175个指令
     seed_tasks = [json.loads(l) for l in open(args.seed_tasks_path, "r")]
+
+    # 如果参数设置了只使用分类任务，那么就从种子任务中筛选出分类任务
     if args.use_clf_seed_tasks_only:
         seed_tasks = [t for t in seed_tasks if t["is_classification"]]
+
+    # 获取每个种子任务的指令，得到一个包含所有种子指令的列表
     seed_instructions = [t["instruction"] for t in seed_tasks]
     print(f"Loaded {len(seed_instructions)} human-written seed instructions")
-    
+
+    # 如果不存在批处理目录，就创建一个 default="data/gpt3_generations/",
     os.makedirs(args.batch_dir, exist_ok=True)
     request_idx = 0
     # load the LM-generated instructions
+    # 初始化一个列表，用于存储机器生成的指令
     machine_instructions = []
+
+    # 如果存在已经生成的机器指令文件，就从文件中加载这些指令 default="data/gpt3_generations/"
+    # 解析每一行的json内容，将机器指令添加到列表中
     if os.path.exists(os.path.join(args.batch_dir, "machine_generated_instructions.jsonl")):
         with open(os.path.join(args.batch_dir, "machine_generated_instructions.jsonl"), "r") as fin:
             for line in fin:
@@ -149,23 +164,29 @@ if __name__ == "__main__":
         print(f"Loaded {len(machine_instructions)} machine-generated instructions")
 
     # similarities = {}
+    # 初始化一个Rouge评分器，用于计算新生成的指令与已有指令的相似度
     scorer = rouge_scorer.RougeScorer(["rougeL"], use_stemmer=False)
     
     # now let's generate new instructions!
+    # 初始化一个进度条，总长度为需要生成的指令数量
     progress_bar = tqdm.tqdm(total=args.num_instructions_to_generate)
+    # 如果已经存在机器生成的指令，就更新进度条
     if machine_instructions:
         progress_bar.update(len(machine_instructions))
-
+    # 打开一个文件，用于存储新生成的机器指令
     with open(os.path.join(args.batch_dir, "machine_generated_instructions.jsonl"), "a") as fout:
+        # 如果生成的指令数还没有达到设定的值，就持续生成新的指令
         while len(machine_instructions) < args.num_instructions_to_generate:
             batch_inputs = []
             for _ in range(args.request_batch_size):
                 # sample machine instructions from the pool
+                # 从机器生成的指令中抽样出一部分，加入到提示指令中
                 prompt_instructions = sample_machine_instructions(
                     machine_instructions, 
                     similarities=None,
                     n=2)
                 # sample human instructions from the pool
+                # 从人类编写的指令中抽样出一部分，加入到提示指令中
                 prompt_instructions += random.sample(seed_instructions, args.num_prompt_instructions - len(prompt_instructions))
                 random.shuffle(prompt_instructions)
                 prompt = encode_prompt(prompt_instructions, classification=args.use_clf_seed_tasks_only)
